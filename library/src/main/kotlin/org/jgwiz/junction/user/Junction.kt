@@ -50,6 +50,35 @@ enum class JunctionKind {
     Internal,
 }
 
+/**
+ * Describes what type of data this junction depends on.
+ *
+ * Some [Junction]s are designed to be reusable and should prefer
+ * the [DependsOnKind.Context] option. This allows many different
+ * graphs to leverage the same context fields regardless of how the context
+ * was populated.
+ *
+ * Other [Junction]s are designed to be used specifically
+ * with other [Junction]s to prevent collisions in behavior. These
+ * are things like business logic pipelines which depend on a specific
+ * set of user input. For this, prefer the [DependsOnKind.Junction].
+ *
+ * Finally, some types (like input Junctions) are forbidden from depending
+ * on anything. In those instances, leverage [DependsOnKind.Nothing]
+ *
+ * Any graph can use any combination of these kinds, so long as all dependencies
+ * are satisfied, with a few caveats:
+ *
+ * 1. Context kinds map to other Context kinds, and Junction kinds behave the same way.
+ * 2. If multiple Context kinds are producing the same outputs, the engine will not know which one to pick.
+ * 3. Prefer Junction kind unless you know that you have a generic, reusable use case.
+ */
+enum class DependsOnKind {
+    Nothing,
+    Context,
+    Junction,
+}
+
 interface InitializingJunction<T: RefinementContext, K> : Junction {
     fun refine(context: T, initializingData: K): JunctionResult
 }
@@ -72,6 +101,8 @@ interface FanoutJunction<T: RefinementContext> : Junction {
  */
 interface RefinementContext
 
+data object NoContext : RefinementContext
+
 @Target(AnnotationTarget.ANNOTATION_CLASS)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class JunctionMarker(val junctionKind: JunctionKind)
@@ -84,18 +115,33 @@ sealed interface JunctionResult {
 
     data class Success(
         val message: String? = null
-    ): JunctionResult
+    ): JunctionDataResult
 
     data class Failure(
         val error: Throwable,
         val message: String? = null,
-    ) : JunctionResult
+    ) : JunctionDataResult
 
     data class Fanout<T : RefinementContext>(
         val refinementContextList: List<T>,
         val fanoutMessage: String? = null,
-    ) : JunctionResult
+    ) : JunctionControlFlowResult
 }
+
+/**
+ * This junction adjusted data which will affect
+ * subsequent junction operation
+ */
+sealed interface JunctionDataResult : JunctionResult
+
+/**
+ * This junction adjusted the control flow which
+ * will affect subsequent junction operation.
+ *
+ * Control flow operations should not fail and therefore
+ * do not return success/fail results.
+ */
+sealed interface JunctionControlFlowResult : JunctionResult
 
 enum class JunctionLogStatus {
     Trace,
@@ -107,15 +153,15 @@ enum class JunctionLogStatus {
 }
 
 @Serializable
-data class JunctionLog(
+data class JunctionLog<T: RefinementContext>(
     val status: JunctionLogStatus,
     val startTime: Long,
     val endTime: Long,
     val message: String? = null,
     val stackTrace: String? = null,
-    val childLogs: List<JunctionLog>? = null,
+    val childLogs: List<JunctionLog<T>>? = null,
+    val splitContextList: List<T>? = null,
 )
-
 
 interface ExternalPortal
 
@@ -128,14 +174,37 @@ interface ExternalPortal
 //    fun refine(context: T, whenTrue: ())
 //}
 
+interface JunctionInvoker {
+    fun invoke(
+        context: RefinementContext,
+        inputData: Any?,
+        portal: ExternalPortal?,
+    ): JunctionResult
+}
+
 data class JunctionDefinition(
     val id: String,
     val kind: JunctionKind,
+    val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
     val dependsOn: List<String> = emptyList(),
+    val contextAdded: List<String> = emptyList(),
     val junction: Junction,
     val portalId: String? = null,
-    val inputDataClass: Class<*>? = null
+    val inputDataClass: Class<*>? = null,
+    val inputDataId: String? = null,
+    val invoker: JunctionInvoker,
 )
+
+data class JunctionExecutionPlan(
+    val junctionExecutionLayerList: List<Set<String>>
+)
+
+/**
+ * A junction execution layer represents a
+ * set of junction ids which can safely (and will) be run in parallel unless
+ * described otherwise by the execution args of the runner.
+ */
+
 
 @Suppress("unused")
 @JunctionMarker(JunctionKind.External)
@@ -144,6 +213,9 @@ data class JunctionDefinition(
 annotation class ExternalJunctionSpec(
     val id: String,
     val dependsOn: Array<String>,
+    val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
+    val contextAdded: Array<String> = [],
+    val externalPortalId: String,
 )
 
 /**
@@ -169,6 +241,7 @@ annotation class ExternalJunctionPortalSpec(
 @Retention(AnnotationRetention.RUNTIME)
 annotation class InputJunctionSpec(
     val id: String,
+    val contextAdded: Array<String>,
 )
 
 @Suppress("unused")
@@ -186,6 +259,7 @@ annotation class InputJunctionDataSpec(
 annotation class FanoutJunctionSpec(
     val id: String,
     val dependsOn: Array<String>,
+    val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
 )
 
 enum class DependencyInjectionLibrary {
@@ -200,51 +274,186 @@ annotation class JunctionGraphConfig(
     val dependencyInjectionLibrary: DependencyInjectionLibrary
 )
 
-interface JunctionRunnerArgs {
-    fun withTargetJunctionId(targetJunctionId: String): JunctionRunnerArgs
-    fun withInputJunctionData(junctionId: String, inputJunctionData: Any): JunctionRunnerArgs
-    fun withExternalPortalId(externalPortalId: String): JunctionRunnerArgs
-}
+data class JunctionRunnerArgs<T: RefinementContext>(
+    val targetJunctionId: String,
+    val inputJunctionData: Map<String, Any> = emptyMap(),
+    val context: T
+)
 
 interface JunctionGraph {
     val junctions: Map<String, JunctionDefinition>
     val portals: Map<String, ExternalPortal>
+    val executionPlans: Map<String, JunctionExecutionPlan>
 }
 
 interface JunctionRunner {
-    fun runJunction(config: JunctionRunnerArgs, junctionGraph: JunctionGraph): JunctionLog
+    fun <T: RefinementContext> runJunction(config: JunctionRunnerArgs<T>, junctionGraph: JunctionGraph): JunctionLog<T>
 }
 
 data object EmptyExternalPortal : ExternalPortal
 
-class DefaultJunctionRunnerArgs: JunctionRunnerArgs {
-    var targetJunctionId : String? = null
-        private set
-    val inputJunctionDataMap = mutableMapOf<String, Any>()
-    var externalPortalId: String? = null
-        private set
+class InvalidJunctionException(message: String) : RuntimeException(message)
 
-    override fun withTargetJunctionId(targetJunctionId: String): JunctionRunnerArgs {
-        check(this.targetJunctionId == null) { "Target Junction already set" }
 
-        this.targetJunctionId = targetJunctionId
-
-        return this
+// TODO:
+//  - Everywhere that we use checkNotNull is invalid because we need to return a JunctionLog
+//    and we don't want to have any bleed-through of exception handling that isn't custom built
+//    by the user themself.
+//    DONE: We need to complete the internal mapping functions and rename them to something more appropriate
+//    consistent and in line with the fact that they are mappers
+//  - Right now we loop through children using a foreach and recursion, but we probably want to leverage
+//    some flavor of parallelism by creating the DAG prior to the function call (like during processing)
+//  - Introduce a DAG concept into the data model and correlate it to a Junction.
+//  - Error is not an acceptable failure state, we need to handle that much more cleanly to handle FATAL, WARN, etc.
+//  - Our junction result log stuff can't just return a junction log, because it may need to return a fanout
+//    where we spin up multiple copied contexts
+object DefaultJunctionRunner : JunctionRunner {
+    override fun <T: RefinementContext> runJunction(
+        config: JunctionRunnerArgs<T>,
+        junctionGraph: JunctionGraph
+    ): JunctionLog<T> {
+        return processJunctionGraph(config.targetJunctionId, junctionGraph, config.inputJunctionData, config.context)
     }
 
-    override fun withInputJunctionData(junctionId: String, inputJunctionData: Any): JunctionRunnerArgs {
-        check(!this.inputJunctionDataMap.containsKey(junctionId)) { "Junction Input Data already defined for $junctionId" }
+    private fun <T : RefinementContext> processJunctionGraph(
+        junctionId: String,
+        junctionGraph: JunctionGraph,
+        inputJunctionData: Map<String, Any>,
+        context: T
+    ): JunctionLog<T> {
+        val startTime = System.currentTimeMillis()
 
-        this.inputJunctionDataMap[junctionId] = inputJunctionData
+        val executionPlan = junctionGraph.executionPlans[junctionId]
+            ?: throw InvalidJunctionException("Execution plan for junction '$junctionId' not found")
 
-        return this
+        val allLayerLogs = mutableListOf<JunctionLog<T>>()
+
+        executionPlan.junctionExecutionLayerList.forEach { executionLayer ->
+            val layerLogs = executionLayer
+                .toList()
+                .parallelStream()
+                .map { currentJunctionId ->
+                    executeJunction(
+                        currentJunctionId = currentJunctionId,
+                        junctionGraph = junctionGraph,
+                        inputJunctionData = inputJunctionData,
+                        context = context,
+                        startTime = startTime,
+                    )
+                }
+                .toList()
+
+            allLayerLogs += layerLogs
+        }
+
+        return allLayerLogs.lastOrNull()
+            ?: JunctionLog(
+                status = JunctionLogStatus.Info,
+                startTime = startTime,
+                endTime = System.currentTimeMillis(),
+                message = "No junctions executed for target '$junctionId'",
+            )
     }
 
-    override fun withExternalPortalId(externalPortalId: String): JunctionRunnerArgs {
-        check(this.externalPortalId == null) { "External Portal already defined, `add` has been called twice." }
+    private fun <T : RefinementContext> executeJunction(
+        currentJunctionId: String,
+        junctionGraph: JunctionGraph,
+        inputJunctionData: Map<String, Any>,
+        context: T,
+        startTime: Long
+    ): JunctionLog<T> {
+        val junctionDef = junctionGraph.junctions[currentJunctionId]
+            ?: throw InvalidJunctionException("JunctionDefinition '$currentJunctionId' not found")
 
-        this.externalPortalId = externalPortalId
+        var inputData: Any? = null
+        var externalPortal: ExternalPortal? = null
 
-        return this
+        when (junctionDef.kind) {
+            JunctionKind.External -> {
+                val portalId = junctionDef.portalId
+                    ?: throw InvalidJunctionException(
+                        "External Portal is required for external JunctionKind types: ${junctionDef.id}"
+                    )
+
+                externalPortal = junctionGraph.portals[portalId]
+                    ?: throw InvalidJunctionException(
+                        "Portal '$portalId' not found for external junction '${junctionDef.id}'"
+                    )
+            }
+
+            JunctionKind.Initializing -> {
+                val inputDataId = junctionDef.inputDataId
+                    ?: throw InvalidJunctionException(
+                        "Input data is required for initializing JunctionKind types: ${junctionDef.id}"
+                    )
+
+                inputData = inputJunctionData[inputDataId]
+                    ?: throw InvalidJunctionException(
+                        "Input data '$inputDataId' not found in input data graph for junction '${junctionDef.id}'"
+                    )
+            }
+
+            JunctionKind.Internal -> Unit
+        }
+
+        return when (val result = junctionDef.invoker.invoke(context, inputData, externalPortal)) {
+            is JunctionDataResult -> junctionLogFromJunctionDataResult(result, emptyList(), startTime)
+            is JunctionControlFlowResult -> junctionLogFromJunctionControlFlowResult(
+                result,
+                emptyList(),
+                startTime
+            )
+        }
     }
+
+    private fun <T: RefinementContext> junctionLogFromJunctionControlFlowResult(result: JunctionControlFlowResult, childLogs: List<JunctionLog<T>>, startTime: Long): JunctionLog<T> {
+        return when (result) {
+            is JunctionResult.Fanout<*> -> JunctionLog(
+                message = result.fanoutMessage,
+                splitContextList = result.refinementContextList as List<T>,
+                startTime = startTime,
+                endTime = System.currentTimeMillis(),
+                childLogs = childLogs,
+                status = JunctionLogStatus.Info,
+            )
+        }
+    }
+
+    private fun <T: RefinementContext> junctionLogFromJunctionDataResult(result: JunctionDataResult, childLogs: List<JunctionLog<T>>, startTime: Long) =
+        when (result) {
+            is JunctionResult.Failure -> {
+                JunctionLog(
+                    status = JunctionLogStatus.Error,
+                    startTime = startTime,
+                    endTime = System.currentTimeMillis(),
+                    message = result.message,
+                    childLogs = childLogs,
+                    stackTrace = result.error.stackTrace.toString(),
+                )
+            }
+            is JunctionResult.Success -> {
+                JunctionLog(
+                    status = JunctionLogStatus.Info,
+                    startTime = startTime,
+                    endTime = System.currentTimeMillis(),
+                    message = result.message,
+                    childLogs = childLogs,
+                )
+            }
+        }
+
+
+
+    private fun <T: RefinementContext> junctionLogFromFailedChildJunctionResult(childJunctionLogs: List<JunctionLog<T>>, startTime: Long, message: String) =
+        JunctionLog(
+            status = JunctionLogStatus.Error,
+            startTime = startTime,
+            childLogs = childJunctionLogs,
+            endTime = System.currentTimeMillis(),
+            message = message,
+        )
+
 }
+
+
+

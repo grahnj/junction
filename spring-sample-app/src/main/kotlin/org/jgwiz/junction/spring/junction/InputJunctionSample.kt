@@ -7,7 +7,10 @@ import org.jgwiz.junction.user.InputJunctionDataSpec
 import org.jgwiz.junction.user.InputJunctionSpec
 import org.jgwiz.junction.user.JunctionResult
 
-@InputJunctionSpec(UniversityJunctionConsts.INPUT_CLASSROOM_ID)
+@InputJunctionSpec(
+    id = UniversityJunctionConsts.INPUT_CLASSROOM_ID,
+    contextAdded = [UniversityJunctionConsts.CONTEXT_CLASSROOM_ID]
+)
 data object InputJunctionSample: InitializingJunction<UniversityPipelineData, InputJunctionSample.UserInput> {
 
     @InputJunctionDataSpec(UniversityJunctionConsts.INPUT_CLASSROOM_ID)
