@@ -2,8 +2,8 @@ plugins {
     kotlin("jvm")
 }
 
-group = "org.jgwiz"
-version = "unspecified"
+group = "com.github.grahnj"
+version = "0.1.0"
 
 repositories {
     mavenCentral()

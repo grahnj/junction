@@ -2,6 +2,7 @@ package org.jgwiz.junction.spring.service
 
 import org.jgwiz.junction.spring.helper.UniversityJunctionConsts
 import org.jgwiz.junction.spring.junction.InputJunctionSample
+import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -21,6 +22,6 @@ class UniversityJunctionServiceTest @Autowired constructor(
             inputMap
         )
 
-        println(result)
+        Assertions.assertEquals(3, result.splitContextList?.size)
     }
 }

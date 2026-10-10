@@ -302,19 +302,6 @@ data object EmptyExternalPortal : ExternalPortal
 
 class InvalidJunctionException(message: String) : RuntimeException(message)
 
-
-// TODO:
-//  - Everywhere that we use checkNotNull is invalid because we need to return a JunctionLog
-//    and we don't want to have any bleed-through of exception handling that isn't custom built
-//    by the user themself.
-//    DONE: We need to complete the internal mapping functions and rename them to something more appropriate
-//    consistent and in line with the fact that they are mappers
-//  - Right now we loop through children using a foreach and recursion, but we probably want to leverage
-//    some flavor of parallelism by creating the DAG prior to the function call (like during processing)
-//  - Introduce a DAG concept into the data model and correlate it to a Junction.
-//  - Error is not an acceptable failure state, we need to handle that much more cleanly to handle FATAL, WARN, etc.
-//  - Our junction result log stuff can't just return a junction log, because it may need to return a fanout
-//    where we spin up multiple copied contexts
 object DefaultJunctionRunner : JunctionRunner {
     override fun <T: RefinementContext> runJunction(
         config: JunctionRunnerArgs<T>,
