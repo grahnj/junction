@@ -8,4 +8,6 @@ data object UniversityJunctionConsts {
     const val UNIVERSITY_JUNCTION_EXTERNAL_PORTAL = "university-junction-external-portal"
 
     const val CONTEXT_CLASSROOM_ID = "context.classroom-id"
+
+    const val REFINEMENT_CONTEXT_UNIVERSITY_PIPELINE = "refinement-context.university-pipeline"
 }

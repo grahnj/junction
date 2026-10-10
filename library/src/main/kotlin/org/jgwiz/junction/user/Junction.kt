@@ -103,6 +103,10 @@ interface RefinementContext
 
 data object NoContext : RefinementContext
 
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.RUNTIME)
+annotation class RefinementContextSpec(val id: String)
+
 @Target(AnnotationTarget.ANNOTATION_CLASS)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class JunctionMarker(val junctionKind: JunctionKind)
@@ -215,6 +219,7 @@ annotation class ExternalJunctionSpec(
     val dependsOn: Array<String>,
     val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
     val contextAdded: Array<String> = [],
+    val requiredContextId: String,
     val externalPortalId: String,
 )
 
@@ -233,6 +238,7 @@ annotation class ExternalJunctionSpec(
 @Retention(AnnotationRetention.RUNTIME)
 annotation class ExternalJunctionPortalSpec(
     val id: String,
+    val frameworkId: String,
 )
 
 @Suppress("unused")
@@ -242,6 +248,7 @@ annotation class ExternalJunctionPortalSpec(
 annotation class InputJunctionSpec(
     val id: String,
     val contextAdded: Array<String>,
+    val requiredContextId: String,
 )
 
 @Suppress("unused")
@@ -260,6 +267,7 @@ annotation class FanoutJunctionSpec(
     val id: String,
     val dependsOn: Array<String>,
     val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
+    val requiredContextId: String,
 )
 
 enum class DependencyInjectionLibrary {

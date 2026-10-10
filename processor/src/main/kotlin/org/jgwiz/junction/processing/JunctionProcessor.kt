@@ -7,10 +7,13 @@ import org.jgwiz.junction.user.DependsOnKind
 import org.jgwiz.junction.user.ExternalJunctionPortalSpec
 import org.jgwiz.junction.user.ExternalJunctionSpec
 import org.jgwiz.junction.user.FanoutJunctionSpec
+import org.jgwiz.junction.user.InputJunctionDataSpec
 import org.jgwiz.junction.user.InputJunctionSpec
 import org.jgwiz.junction.user.JunctionExecutionPlan
 import org.jgwiz.junction.user.JunctionGraphConfig
+import org.jgwiz.junction.user.JunctionInvoker
 import org.jgwiz.junction.user.JunctionKind
+import org.jgwiz.junction.user.RefinementContextSpec
 
 class JunctionProcessor(
     private val env: SymbolProcessorEnvironment
@@ -54,6 +57,10 @@ class JunctionProcessor(
             InputJunctionSpec::class.qualifiedName!!
         ).filterIsInstance<KSClassDeclaration>()
 
+        val inputJunctionData = resolver.getSymbolsWithAnnotation(
+            InputJunctionDataSpec::class.qualifiedName!!
+        ).filterIsInstance<KSClassDeclaration>()
+
         val fanoutJunctions = resolver.getSymbolsWithAnnotation(
             FanoutJunctionSpec::class.qualifiedName!!
         ).filterIsInstance<KSClassDeclaration>()
@@ -62,16 +69,45 @@ class JunctionProcessor(
             ExternalJunctionPortalSpec::class.qualifiedName!!
         ).filterIsInstance<KSClassDeclaration>()
 
+        val contexts = resolver.getSymbolsWithAnnotation(
+            RefinementContextSpec::class.qualifiedName!!
+        ).filterIsInstance<KSClassDeclaration>()
+
         val junctionMetas = mutableListOf<JunctionMeta>()
         val portalMetas = mutableListOf<PortalMeta>()
+        val contextMetas = mutableListOf<ContextMeta>()
 
         externalJunctions.forEach { collectExternalJunction(it, junctionMetas) }
-        inputJunctions.forEach { collectInputJunction(it, junctionMetas) }
+        inputJunctions.forEach { inputJunctionDecl ->
+            val inputDataClassDecl = inputJunctionData.first { decl ->
+                val dataDecl = decl.annotations.first {
+                    it.shortName.asString() == "InputJunctionDataSpec"
+                }
+
+                val dataDeclJunctionId = dataDecl.arguments
+                    .first { it.name?.asString() == "id" }
+                    .value as String
+
+                val inputDecl = inputJunctionDecl.annotations.first {
+                    it.shortName.asString() == "InputJunctionSpec"
+                }
+
+                val inputDeclJunctionId = inputDecl.arguments
+                    .first { it.name?.asString() == "id" }
+                    .value as String
+
+                dataDeclJunctionId == inputDeclJunctionId
+            }
+
+            collectInputJunction(inputJunctionDecl, inputDataClassDecl, junctionMetas)
+
+        }
         fanoutJunctions.forEach { collectFanoutJunction(it, junctionMetas) }
 
         portals.forEach { collectPortal(it, portalMetas) }
+        contexts.forEach { collectContext(it, contextMetas) }
 
-        generateGraph(packageName, diFramework, junctionMetas, portalMetas)
+        generateGraph(packageName, diFramework, junctionMetas, portalMetas, contextMetas)
 
         return emptyList()
     }
@@ -104,6 +140,10 @@ class JunctionProcessor(
             .first { it.name?.asString() == "externalPortalId" }
             .value as String
 
+        val requiredContextId = annotation.arguments
+            .first { it.name?.asString() == "requiredContextId" }
+            .value as String
+
         val dependsOnKind = DependsOnKind.valueOf(dependsOnKindString.simpleName.asString())
 
         val dependsOn = dependsOnArg.filterIsInstance<String>()
@@ -116,13 +156,16 @@ class JunctionProcessor(
             dependsOnKind = dependsOnKind,
             contextAdded = contextAdded,
             qualifiedName = decl.qualifiedName!!.asString(),
+            simpleName = decl.simpleName.asString(),
             portalId = portalId,
-            inputDataClass = null
+            inputDataClass = null,
+            requiredContextId = requiredContextId,
         )
     }
 
     private fun collectInputJunction(
         decl: KSClassDeclaration,
+        dataDecl: KSClassDeclaration,
         out: MutableList<JunctionMeta>
     ) {
         val annotation = decl.annotations
@@ -136,6 +179,10 @@ class JunctionProcessor(
             .first { it.name?.asString() == "contextAdded" }
             .value as List<*>
 
+        val requiredContextId = annotation.arguments
+            .first { it.name?.asString() == "requiredContextId" }
+            .value as String
+
         val contextAdded = contextAddedArg.filterIsInstance<String>()
 
         // Input data type is annotated separately with @InputJunctionDataSpec
@@ -147,8 +194,10 @@ class JunctionProcessor(
             dependsOnKind = DependsOnKind.Nothing,
             contextAdded = contextAdded,
             qualifiedName = decl.qualifiedName!!.asString(),
+            simpleName = decl.simpleName.asString(),
             portalId = null,
-            inputDataClass = null
+            inputDataClass = dataDecl.qualifiedName!!.asString(),
+            requiredContextId = requiredContextId,
         )
     }
 
@@ -167,6 +216,10 @@ class JunctionProcessor(
             .first { it.name?.asString() == "dependsOn" }
             .value as List<*>
 
+        val requiredContextId = annotation.arguments
+            .first { it.name?.asString() == "requiredContextId" }
+            .value as String
+
         val dependsOn = dependsOnArg.filterIsInstance<String>()
 
         out += JunctionMeta(
@@ -176,6 +229,8 @@ class JunctionProcessor(
             dependsOnKind = DependsOnKind.Junction,
             contextAdded = emptyList(),
             qualifiedName = decl.qualifiedName!!.asString(),
+            simpleName = decl.simpleName.asString(),
+            requiredContextId = requiredContextId,
             portalId = null,
             inputDataClass = null
         )
@@ -192,7 +247,29 @@ class JunctionProcessor(
             .first { it.name?.asString() == "id" }
             .value as String
 
+        val frameworkId = annotation.arguments
+            .first { it.name?.asString() == "frameworkId" }
+            .value as String
+
         out += PortalMeta(
+            id = id,
+            qualifiedName = decl.qualifiedName!!.asString(),
+            frameworkId = frameworkId
+        )
+    }
+
+    private fun collectContext(
+        decl: KSClassDeclaration,
+        out: MutableList<ContextMeta>
+    ) {
+        val annotation = decl.annotations
+            .first { it.shortName.asString() == "RefinementContextSpec" }
+
+        val id = annotation.arguments
+            .first { it.name?.asString() == "id" }
+            .value as String
+
+        out += ContextMeta(
             id = id,
             qualifiedName = decl.qualifiedName!!.asString()
         )
@@ -274,7 +351,8 @@ class JunctionProcessor(
         packageName: String,
         diLibrary: DependencyInjectionLibrary,
         junctions: List<JunctionMeta>,
-        portals: List<PortalMeta>
+        portals: List<PortalMeta>,
+        contexts: List<ContextMeta>,
     ) {
         val file = codeGenerator.createNewFile(
             Dependencies(false),
@@ -299,6 +377,10 @@ class JunctionProcessor(
                 w.appendLine("import ${it.qualifiedName}")
             }
 
+//            contexts.forEach {
+//                w.appendLine("import ${it.qualifiedName}")
+//            }
+
             when (diLibrary) {
                 DependencyInjectionLibrary.Spring4 -> {
                     w.appendLine("import org.springframework.stereotype.Component")
@@ -315,8 +397,9 @@ class JunctionProcessor(
 
             w.appendLine("class GeneratedJunctionGraph @Autowired constructor(")
             portals.forEach {
-                w.appendLine("    @param:Qualifier(\"${it.id}\")")
-                w.appendLine("    val ${it.id}: ${it.qualifiedName.substringAfterLast(".")},")
+                // TODO: this is a di library thing that needs major cleanup
+                w.appendLine("    @param:Qualifier(\"${it.frameworkId}\")")
+                w.appendLine("    val ${it.frameworkId}: ${it.qualifiedName.substringAfterLast(".")},")
             }
             w.appendLine(") : JunctionGraph {")
             w.appendLine()
@@ -333,8 +416,10 @@ class JunctionProcessor(
                 val simpleName = j.qualifiedName.substringAfterLast(".")
                 val portalIdLiteral = j.portalId?.let { "\"$it\"" } ?: "null"
                 val inputDataClassLiteral = j.inputDataClass?.let {
-                    "${it.name}::class.java"
+                    "${it}::class.java"
                 } ?: "null"
+
+                val generatedInvoker = generateInvokerForJunction(j, portals, contexts)
 
                 w.appendLine(
                     "        \"${j.id}\" to JunctionDefinition(" +
@@ -344,7 +429,8 @@ class JunctionProcessor(
                             " dependsOnKind = DependsOnKind.${j.dependsOnKind.name}," +
                             " junction = $simpleName," +
                             " portalId = $portalIdLiteral," +
-                            " inputDataClass = $inputDataClassLiteral" +
+                            " inputDataClass = $inputDataClassLiteral," +
+                            " invoker = $generatedInvoker," +
                             ")$comma"
                 )
             }
@@ -354,7 +440,7 @@ class JunctionProcessor(
             w.appendLine("    override val portals: Map<String, ExternalPortal> = mapOf(")
 
             portals.forEachIndexed { idx, p ->
-                w.appendLine("        \"${p.id}\" to ${p.id},")
+                w.appendLine("        \"${p.id}\" to ${p.frameworkId},")
             }
 
             w.appendLine("    )")
@@ -382,18 +468,132 @@ class JunctionProcessor(
         }
     }
 
+    private fun generateInvokerForJunction(
+        junctionMeta: JunctionMeta,
+        portals: List<PortalMeta>,
+        contexts: List<ContextMeta>
+    ): String {
+        val contextId = junctionMeta.requiredContextId
+            ?: error("Junction '${junctionMeta.id}' has no required context ID")
+
+        println(contexts)
+        println(junctionMeta)
+        println(portals)
+
+        val context = contexts.singleOrNull { it.id == contextId }
+            ?: error("Expected exactly one context with ID '$contextId' for junction '${junctionMeta.id}'")
+
+        val portal = if (junctionMeta.kind == JunctionKind.External) {
+            val portalId = junctionMeta.portalId
+                ?: error("External junction '${junctionMeta.id}' has no portal ID")
+
+            portals.singleOrNull { it.id == portalId }
+                ?: error("Expected exactly one portal with ID '$portalId' for junction '${junctionMeta.id}'")
+        } else {
+            null
+        }
+
+        return generateInvokerForJunction(junctionMeta, portal, context)
+    }
+
+    private fun generateInvokerForJunction(junctionMeta: JunctionMeta, portal: PortalMeta?, context: ContextMeta): String =
+        when (junctionMeta.kind) {
+            JunctionKind.Initializing -> {
+                """
+                    object : JunctionInvoker {
+                        override fun invoke(
+                            context: RefinementContext,
+                            inputData: Any?,
+                            portal: ExternalPortal?
+                        ): JunctionResult {
+                    
+                            check(context is ${context.qualifiedName}) {
+                                "Refinement context for ${junctionMeta.id} is not of the correct type: ${'$'}{context::class.simpleName}"
+                            }
+                    
+                            checkNotNull(inputData) {
+                                "Input Data for ${junctionMeta.id} cannot be null, but was"
+                            }
+                    
+                            check(inputData is ${junctionMeta.inputDataClass}) {
+                                "Input Data for ${junctionMeta.id} is not of the correct type: ${'$'}{inputData::class.simpleName}"
+                            }
+                    
+                            return ${junctionMeta.simpleName}.refine(context, inputData)
+                        }
+                    }
+                """.trimIndent()
+            }
+            JunctionKind.External -> {
+                """
+                    object : JunctionInvoker {
+                        override fun invoke(
+                            context: RefinementContext,
+                            inputData: Any?,
+                            portal: ExternalPortal?
+                        ): JunctionResult {
+                    
+                            check(context is ${context.qualifiedName}) {
+                                "Refinement context for ${junctionMeta.id} is not of the correct type: ${'$'}{context::class.simpleName}"
+                            }
+                            
+                            checkNotNull(portal) {
+                                "External Portal is required for ${junctionMeta.id}, but was null"
+                            }
+                    
+                            check(portal is UniversityJunctionExternalPortal) {
+                                "External Portal is required to be ${portal!!.qualifiedName}, but was ${'$'}{portal::class.simpleName}"
+                            }
+                    
+                            return ${junctionMeta.simpleName}.refine(context, portal)
+                        }
+                    }
+                """.trimIndent()
+            }
+            JunctionKind.Internal -> {
+                """
+                    object : JunctionInvoker {
+                        override fun invoke(
+                            context: RefinementContext,
+                            inputData: Any?,
+                            portal: ExternalPortal?
+                        ): JunctionResult {
+                    
+                            check(context is ${context.qualifiedName}) {
+                                "Refinement context for ${junctionMeta.id} is not of the correct type: ${'$'}{context::class.simpleName}"
+                            }
+                    
+                            return ${junctionMeta.simpleName}.refine(context)
+                        }
+                    }
+                """.trimIndent()
+            }
+        }
+
+
     data class JunctionMeta(
         val id: String,
         val kind: JunctionKind,
         val dependsOn: List<String>,
         val dependsOnKind: DependsOnKind,
         val contextAdded: List<String>,
+        val requiredContextId: String?,
         val qualifiedName: String,
+        val simpleName: String,
         val portalId: String?,
-        val inputDataClass: Class<*>?,
+        val inputDataClass: String?,
     )
 
+    /**
+     * TODO: framework id is doing double work here and we should have another column called memberName
+     */
     data class PortalMeta(
+        val id: String,
+        val qualifiedName: String,
+        val frameworkId: String,
+    )
+
+    data class ContextMeta(
         val id: String,
         val qualifiedName: String,
     )
