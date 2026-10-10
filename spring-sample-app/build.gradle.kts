@@ -16,6 +16,8 @@ dependencies {
     implementation(project(":library"))
     implementation(libs.bundles.springEcosystem)
 
+    testImplementation(libs.bundles.springTestEcosystem)
+
     ksp(project(":processor"))
 }
 

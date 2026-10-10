@@ -175,6 +175,13 @@ class JunctionProcessor(
             .first { it.name?.asString() == "id" }
             .value as String
 
+        val dataId = dataDecl
+            .annotations
+            .first { it.shortName.asString() == "InputJunctionDataSpec" }
+            .arguments
+            .first { it.name?.asString() == "id" }
+            .value as String
+
         val contextAddedArg = annotation.arguments
             .first { it.name?.asString() == "contextAdded" }
             .value as List<*>
@@ -197,6 +204,7 @@ class JunctionProcessor(
             simpleName = decl.simpleName.asString(),
             portalId = null,
             inputDataClass = dataDecl.qualifiedName!!.asString(),
+            inputDataId = dataId,
             requiredContextId = requiredContextId,
         )
     }
@@ -419,6 +427,7 @@ class JunctionProcessor(
                     "${it}::class.java"
                 } ?: "null"
 
+                val inputDataIdLiteral = j.inputDataId?.let { "\"$it\"" } ?: "null"
                 val generatedInvoker = generateInvokerForJunction(j, portals, contexts)
 
                 w.appendLine(
@@ -430,6 +439,7 @@ class JunctionProcessor(
                             " junction = $simpleName," +
                             " portalId = $portalIdLiteral," +
                             " inputDataClass = $inputDataClassLiteral," +
+                            " inputDataId = $inputDataIdLiteral," +
                             " invoker = $generatedInvoker," +
                             ")$comma"
                 )
@@ -582,6 +592,7 @@ class JunctionProcessor(
         val simpleName: String,
         val portalId: String?,
         val inputDataClass: String?,
+        val inputDataId: String? = null,
     )
 
     /**
