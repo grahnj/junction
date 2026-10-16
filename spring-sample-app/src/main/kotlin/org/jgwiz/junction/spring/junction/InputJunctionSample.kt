@@ -25,6 +25,8 @@ data object InputJunctionSample: InitializingJunction<UniversityPipelineData, In
     override fun refine(context: UniversityPipelineData, initializingData: UserInput): JunctionResult {
         context.classroomId = initializingData.classroomId
 
-        return JunctionResult.Success()
+        return JunctionResult.Success(
+            contextSnapshot = context.asSnapshot()
+        )
     }
 }

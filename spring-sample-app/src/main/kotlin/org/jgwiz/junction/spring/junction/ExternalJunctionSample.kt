@@ -41,10 +41,12 @@ object GetStudentListByClassroomId : ExternalJunction<UniversityPipelineData, Un
 
             return JunctionResult.Success(
                 message = "${response.size} students returned for classroomId ${localContext.classroomId}",
+                contextSnapshot = context.asSnapshot()
             )
         } catch (e: Exception) {
             return JunctionResult.Failure(
                 error = Error(e),
+                contextSnapshot = context.asSnapshot()
             )
         }
     }

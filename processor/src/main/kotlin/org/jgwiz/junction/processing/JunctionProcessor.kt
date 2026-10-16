@@ -11,7 +11,6 @@ import org.jgwiz.junction.user.InputJunctionDataSpec
 import org.jgwiz.junction.user.InputJunctionSpec
 import org.jgwiz.junction.user.JunctionExecutionPlan
 import org.jgwiz.junction.user.JunctionGraphConfig
-import org.jgwiz.junction.user.JunctionInvoker
 import org.jgwiz.junction.user.JunctionKind
 import org.jgwiz.junction.user.RefinementContextSpec
 
@@ -283,76 +282,187 @@ class JunctionProcessor(
         )
     }
 
-    private fun buildExecutionPlans(junctions: List<JunctionMeta>): Map<String, JunctionExecutionPlan> {
-        val resolved = linkedMapOf<String, JunctionExecutionPlan>()
-        val availableContext = mutableMapOf<String, String>()
-        val remaining = junctions.toMutableList()
+    data class ExecutionPlanOutput(
+        val executionPlans: Map<String, JunctionExecutionPlan>,
+        val contextPlanBinders: Map<String, List<String>> = emptyMap(),
+    )
 
-        while (remaining.isNotEmpty()) {
+    private fun buildExecutionPlans(junctions: List<JunctionMeta>): Map<String, JunctionExecutionPlan> {
+        val resolvedJunctions = linkedMapOf<String, JunctionExecutionPlan>()
+        val resolvedContextJunctions = linkedMapOf<String, Set<JunctionExecutionPlan>>()
+        val availableContext = mutableMapOf<String, MutableSet<String>>()
+        val remaining = junctions.toMutableList()
+        var contextPass = 0
+        var potentialContextJunctionIssue = mutableListOf<String>()
+
+        while (remaining.any { it.dependsOnKind != DependsOnKind.Context }) {
             val ready = remaining.filter { j ->
                 when (j.dependsOnKind) {
-                    DependsOnKind.Context -> j.dependsOn.all { ctx -> availableContext.containsKey(ctx) }
-                    DependsOnKind.Junction -> j.dependsOn.all { dep -> resolved.containsKey(dep) }
+                    DependsOnKind.Context -> true
+                    DependsOnKind.Junction -> j.dependsOn.all { dep ->
+                        if (resolvedJunctions.containsKey(dep))
+                            true
+                        else {
+                            val contextDepExecutionPlans = resolvedContextJunctions[dep]
+
+                            if (contextDepExecutionPlans.isNullOrEmpty()) {
+                                false
+                            } else {
+                                val precedingJunctions = contextDepExecutionPlans
+                                    .map { plan ->
+                                        plan.junctionExecutionLayerList
+                                            .first() // one item list
+                                            .first() // one item set
+                                    }.joinToString(",")
+
+                                val result = contextDepExecutionPlans
+                                    .firstOrNull { plan ->
+                                        val precedingJunction = plan.junctionExecutionLayerList
+                                            .first() // one item list
+                                            .first() // one item set
+
+                                        j.dependsOn.contains(precedingJunction)
+                                    } != null
+
+                                if (!result) {
+                                    potentialContextJunctionIssue.add("""
+                                        Junction ${j.id} is dependent on a Context Junction ($dep) but is missing an upstream dependency for it.
+                                        
+                                        Because Context Junctions are reusable across many context providers, the Junction depending on it must additionally depend on a non-Context Junction
+                                        which is meant to precede the Context Junction and add the necessary context.
+                                        
+                                        Available junctions are: $precedingJunctions
+                                    """.trimIndent())
+                                }
+
+                                result
+                            }
+                        }
+
+                    }
                     DependsOnKind.Nothing -> true
                 }
             }
 
-            if (ready.isEmpty()) {
-                val cycleIds = remaining.joinToString { it.id }
-                error("Cyclic or unresolved junction dependencies detected: $cycleIds")
+            val onlyContextReady = ready.all { it.dependsOnKind == DependsOnKind.Context }
+
+            if (onlyContextReady) {
+                contextPass++
+
+                if (contextPass > 1) {
+                    val cycleIds = remaining.filter{ it.dependsOnKind != DependsOnKind.Context}.joinToString { it.id }
+
+                    if (potentialContextJunctionIssue.isNotEmpty()) {
+                        potentialContextJunctionIssue.joinToString("\n")
+                            .apply(::error)
+                    }
+
+                    error("Cyclic or unresolved junction dependencies detected: $cycleIds")
+                }
+            } else {
+                contextPass = 0
             }
 
             ready.forEach { j ->
-                j.contextAdded.forEach { context -> availableContext[context] = j.id }
+                j.contextAdded.forEach { context ->
+
+                    val foundAtContext = availableContext[context]
+
+                    if (foundAtContext != null) {
+                        foundAtContext.add(j.id)
+                    } else {
+                        availableContext[context] = mutableSetOf(j.id)
+                    }
+                }
 
 
-                var dependencyPlans: List<JunctionExecutionPlan>
+                var plans: List<JunctionExecutionPlan>
                 when (j.dependsOnKind) {
-                    DependsOnKind.Nothing -> dependencyPlans = emptyList()
+                    DependsOnKind.Nothing -> plans = emptyList()
                     DependsOnKind.Context -> {
-                        val depIds = j.dependsOn.map { ctx ->
-                            availableContext.getValue(ctx)
+                        val depIds = j.dependsOn.mapNotNull { ctx ->
+                            availableContext[ctx]
                         }
 
-                        dependencyPlans = depIds.mapNotNull { dep -> resolved[dep] }
-                    }
-                    DependsOnKind.Junction -> dependencyPlans = j.dependsOn.mapNotNull { dep -> resolved[dep] }
-                }
+                        plans = depIds.flatMap { dep ->
+                            dep.mapNotNull { d ->
+                                val r = resolvedJunctions[d]
 
-                val mergedLayers = mutableListOf<Set<String>>()
-                dependencyPlans.forEach { plan ->
-                    plan.junctionExecutionLayerList.forEachIndexed { index, layer ->
-                        val existing = mergedLayers.getOrNull(index)?.toMutableSet() ?: mutableSetOf()
-                        existing += layer
-                        if (index >= mergedLayers.size) {
-                            mergedLayers.add(existing)
-                        } else {
-                            mergedLayers[index] = existing
-                        }
-                    }
-                }
+                                if (r != null) {
+                                    JunctionExecutionPlan(
+                                        r.junctionExecutionLayerList + listOf(setOf(j.id))
+                                    )
+                                } else {
+                                    r
+                                }
 
-                val seen = linkedSetOf<String>()
-                val deduped = mergedLayers
-                    .map { layer ->
-                        layer.filter { id ->
-                            if (seen.contains(id)) false else {
-                                seen += id
-                                true
                             }
-                        }.toSet()
+                        }
                     }
-                    .filter { it.isNotEmpty() }
+                    DependsOnKind.Junction -> plans = j.dependsOn.mapNotNull { dep ->
+                        if (resolvedJunctions.containsKey(dep))
+                            resolvedJunctions[dep]
+                        else {
+                            val contextDepExecutionPlans = resolvedContextJunctions[dep]
 
-                val plan = JunctionExecutionPlan(deduped + listOf(setOf(j.id)))
+                            contextDepExecutionPlans!!
+                                .first { plan ->
+                                    val precedingJunction = plan.junctionExecutionLayerList
+                                        .first() // one item list
+                                        .first() // one item set
+
+                                    j.dependsOn.contains(precedingJunction)
+                                }
+                        }
+                    }
+                }
+
+                when (j.dependsOnKind) {
+                    DependsOnKind.Context -> {
+                        resolvedContextJunctions[j.id] = plans.toSet()
+                    }
+                    else -> {
+                        val mergedLayers = mutableListOf<Set<String>>()
+                        plans.forEach { plan ->
+                            plan.junctionExecutionLayerList.forEachIndexed { index, layer ->
+                                val existing = mergedLayers.getOrNull(index)?.toMutableSet() ?: mutableSetOf()
+                                existing += layer
+                                if (index >= mergedLayers.size) {
+                                    mergedLayers.add(existing)
+                                } else {
+                                    mergedLayers[index] = existing
+                                }
+                            }
+                        }
+
+                        val seen = linkedSetOf<String>()
+                        val deduped = mergedLayers
+                            .map { layer ->
+                                layer.filter { id ->
+                                    if (seen.contains(id)) false else {
+                                        seen += id
+                                        true
+                                    }
+                                }.toSet()
+                            }
+                            .filter { it.isNotEmpty() }
+
+                        val plan = JunctionExecutionPlan(deduped + listOf(setOf(j.id)))
 
 
-                resolved[j.id] = plan
-                remaining.removeIf { it.id == j.id }
+                        resolvedJunctions[j.id] = plan
+                    }
+                }
+
+
+
+                if (j.dependsOnKind != DependsOnKind.Context) {
+                    remaining.removeIf { it.id == j.id }
+                }
             }
         }
 
-        return resolved
+        return resolvedJunctions
     }
 
     private fun generateGraph(
@@ -390,7 +500,7 @@ class JunctionProcessor(
 //            }
 
             when (diLibrary) {
-                DependencyInjectionLibrary.Spring4 -> {
+                DependencyInjectionLibrary.Spring -> {
                     w.appendLine("import org.springframework.stereotype.Component")
                     w.appendLine("import org.springframework.beans.factory.annotation.Autowired")
                     w.appendLine("import org.springframework.beans.factory.annotation.Qualifier")
@@ -400,7 +510,7 @@ class JunctionProcessor(
             w.appendLine()
 
             when (diLibrary) {
-                DependencyInjectionLibrary.Spring4 -> w.appendLine("@Component")
+                DependencyInjectionLibrary.Spring -> w.appendLine("@Component")
             }
 
             w.appendLine("class GeneratedJunctionGraph @Autowired constructor(")
@@ -485,10 +595,6 @@ class JunctionProcessor(
     ): String {
         val contextId = junctionMeta.requiredContextId
             ?: error("Junction '${junctionMeta.id}' has no required context ID")
-
-        println(contexts)
-        println(junctionMeta)
-        println(portals)
 
         val context = contexts.singleOrNull { it.id == contextId }
             ?: error("Expected exactly one context with ID '$contextId' for junction '${junctionMeta.id}'")

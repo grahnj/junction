@@ -11,7 +11,7 @@ import org.jgwiz.junction.user.RefinementContext
 
 @FanoutJunctionSpec(
     id = UniversityJunctionConsts.SPLIT_CONTEXT_BY_STUDENT,
-    dependsOn = [UniversityJunctionConsts.GET_STUDENT_LIST_BY_CLASSROOM_ID],
+    dependsOn = [UniversityJunctionConsts.GET_STUDENT_LIST_BY_CLASSROOM_ID, UniversityJunctionConsts.INPUT_CLASSROOM_ID],
     requiredContextId = UniversityJunctionConsts.REFINEMENT_CONTEXT_UNIVERSITY_PIPELINE,
 )
 object FanOutStudentListForStudentContext : FanoutJunction<UniversityPipelineData> {

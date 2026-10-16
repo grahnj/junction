@@ -1,6 +1,7 @@
 package org.jgwiz.junction.user
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * ---------------------------------------------------------------------
@@ -99,9 +100,9 @@ interface FanoutJunction<T: RefinementContext> : Junction {
  * Describes the data which moves between [Junction]
  * boundaries as it is refined into its final state
  */
-interface RefinementContext
-
-data object NoContext : RefinementContext
+interface RefinementContext {
+    fun asSnapshot(): JsonObject
+}
 
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
@@ -118,12 +119,14 @@ annotation class JunctionDataMarker(val junctionKind: JunctionKind)
 sealed interface JunctionResult {
 
     data class Success(
-        val message: String? = null
+        val message: String? = null,
+        val contextSnapshot: JsonObject
     ): JunctionDataResult
 
     data class Failure(
         val error: Throwable,
         val message: String? = null,
+        val contextSnapshot: JsonObject
     ) : JunctionDataResult
 
     data class Fanout<T : RefinementContext>(
@@ -165,6 +168,7 @@ data class JunctionLog<T: RefinementContext>(
     val stackTrace: String? = null,
     val childLogs: List<JunctionLog<T>>? = null,
     val splitContextList: List<T>? = null,
+    val contextSnapshot: JsonObject?,
 )
 
 interface ExternalPortal
@@ -271,7 +275,7 @@ annotation class FanoutJunctionSpec(
 )
 
 enum class DependencyInjectionLibrary {
-    Spring4,
+    Spring,
 }
 
 @Suppress("unused")
@@ -297,8 +301,6 @@ interface JunctionGraph {
 interface JunctionRunner {
     fun <T: RefinementContext> runJunction(config: JunctionRunnerArgs<T>, junctionGraph: JunctionGraph): JunctionLog<T>
 }
-
-data object EmptyExternalPortal : ExternalPortal
 
 class InvalidJunctionException(message: String) : RuntimeException(message)
 
@@ -333,7 +335,7 @@ object DefaultJunctionRunner : JunctionRunner {
                         junctionGraph = junctionGraph,
                         inputJunctionData = inputJunctionData,
                         context = context,
-                        startTime = startTime,
+                        startTime = System.currentTimeMillis(),
                     )
                 }
                 .toList()
@@ -342,11 +344,22 @@ object DefaultJunctionRunner : JunctionRunner {
         }
 
         return allLayerLogs.lastOrNull()
+            ?.let {
+                JunctionLog(
+                    status = JunctionLogStatus.Info,
+                    startTime = startTime,
+                    endTime = System.currentTimeMillis(),
+                    contextSnapshot = context.asSnapshot(),
+                    childLogs = allLayerLogs,
+                    splitContextList = it.splitContextList,
+                )
+            }
             ?: JunctionLog(
                 status = JunctionLogStatus.Info,
                 startTime = startTime,
                 endTime = System.currentTimeMillis(),
                 message = "No junctions executed for target '$junctionId'",
+                contextSnapshot = null,
             )
     }
 
@@ -410,6 +423,7 @@ object DefaultJunctionRunner : JunctionRunner {
                 endTime = System.currentTimeMillis(),
                 childLogs = childLogs,
                 status = JunctionLogStatus.Info,
+                contextSnapshot = null,
             )
         }
     }
@@ -424,6 +438,7 @@ object DefaultJunctionRunner : JunctionRunner {
                     message = result.message,
                     childLogs = childLogs,
                     stackTrace = result.error.stackTrace.toString(),
+                    contextSnapshot = result.contextSnapshot
                 )
             }
             is JunctionResult.Success -> {
@@ -433,20 +448,22 @@ object DefaultJunctionRunner : JunctionRunner {
                     endTime = System.currentTimeMillis(),
                     message = result.message,
                     childLogs = childLogs,
+                    contextSnapshot = result.contextSnapshot
                 )
             }
         }
 
 
 
-    private fun <T: RefinementContext> junctionLogFromFailedChildJunctionResult(childJunctionLogs: List<JunctionLog<T>>, startTime: Long, message: String) =
-        JunctionLog(
-            status = JunctionLogStatus.Error,
-            startTime = startTime,
-            childLogs = childJunctionLogs,
-            endTime = System.currentTimeMillis(),
-            message = message,
-        )
+//    private fun <T: RefinementContext> junctionLogFromFailedChildJunctionResult(childJunctionLogs: List<JunctionLog<T>>, startTime: Long, message: String) =
+//        JunctionLog(
+//            status = JunctionLogStatus.Error,
+//            startTime = startTime,
+//            childLogs = childJunctionLogs,
+//            endTime = System.currentTimeMillis(),
+//            message = message,
+//
+//        )
 
 }
 

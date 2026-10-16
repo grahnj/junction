@@ -7,6 +7,7 @@ plugins {
     alias(libs.plugins.springBoot)
     alias(libs.plugins.springDeps)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.kotlinPluginSerialization)
     // Apply the Application plugin to add support for building an executable JVM application.
     application
 }
@@ -15,6 +16,7 @@ dependencies {
     // Project "app" depends on project "utils". (Project paths are separated with ":", so ":utils" refers to the top-level "utils" project.)
     implementation(project(":library"))
     implementation(libs.bundles.springEcosystem)
+    implementation(libs.bundles.kotlinxEcosystem)
 
     testImplementation(libs.bundles.springTestEcosystem)
 

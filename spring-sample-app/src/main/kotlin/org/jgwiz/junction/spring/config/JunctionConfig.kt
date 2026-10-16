@@ -5,6 +5,6 @@ import org.jgwiz.junction.user.JunctionGraphConfig
 
 @JunctionGraphConfig(
     packageName = "org.jgwiz.junction.spring.graph",
-    dependencyInjectionLibrary = DependencyInjectionLibrary.Spring4,
+    dependencyInjectionLibrary = DependencyInjectionLibrary.Spring,
 )
 object JunctionConfig
