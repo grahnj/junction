@@ -1,7 +1,8 @@
 package org.jgwiz.junction.spring.service
 
-import org.jgwiz.junction.spring.helper.UniversityJunctionConsts
+import org.jgwiz.junction.spring.helper.Junc
 import org.jgwiz.junction.spring.junction.InputJunctionSample
+import org.jgwiz.junction.user.JunctionLogStatus
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -15,13 +16,13 @@ class UniversityJunctionServiceTest @Autowired constructor(
     @Test
     fun `it works`() {
 
-        val inputMap = mapOf(UniversityJunctionConsts.INPUT_CLASSROOM_ID to InputJunctionSample.UserInput(17))
+        val inputMap = mapOf(Junc.JUNCTION_INPUT_CLASSROOM_ID to InputJunctionSample.UserInput(17))
 
         val result = universityJunctionService.runJunction(
-            UniversityJunctionConsts.SPLIT_CONTEXT_BY_STUDENT,
+            Junc.JUNCTION_EXTERNAL_CREATE_STUDENT_CLASSROOM,
             inputMap
         )
 
-        Assertions.assertEquals(3, result.splitContextList?.size)
+        Assertions.assertEquals(JunctionLogStatus.Info, result.status)
     }
 }

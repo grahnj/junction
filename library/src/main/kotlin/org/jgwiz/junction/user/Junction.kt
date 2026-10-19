@@ -88,7 +88,7 @@ interface ExternalJunction<T: RefinementContext, K: ExternalPortal> : Junction {
     fun refine(context: T, externalAccess: K): JunctionResult
 }
 
-interface InternalJunction<T: RefinementContext> : Junction {
+interface TransformJunction<T: RefinementContext> : Junction {
     fun refine(context: T): JunctionResult
 }
 
@@ -204,7 +204,9 @@ data class JunctionDefinition(
 )
 
 data class JunctionExecutionPlan(
-    val junctionExecutionLayerList: List<Set<String>>
+    val junctionId: String,
+    val contextsAvailableAtThisJunction: Set<String>,
+    val junctionExecutionLayerList: List<Set<String>>,
 )
 
 /**
@@ -223,7 +225,7 @@ annotation class ExternalJunctionSpec(
     val dependsOn: Array<String>,
     val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
     val contextAdded: Array<String> = [],
-    val requiredContextId: String,
+    val refinementContextId: String,
     val externalPortalId: String,
 )
 
@@ -252,7 +254,7 @@ annotation class ExternalJunctionPortalSpec(
 annotation class InputJunctionSpec(
     val id: String,
     val contextAdded: Array<String>,
-    val requiredContextId: String,
+    val refinementContextId: String,
 )
 
 @Suppress("unused")
@@ -263,15 +265,28 @@ annotation class InputJunctionDataSpec(
     val id: String
 )
 
+//@Suppress("unused")
+//@JunctionMarker(JunctionKind.Internal)
+//@Target(AnnotationTarget.CLASS)
+//@Retention(AnnotationRetention.RUNTIME)
+//annotation class FanoutJunctionSpec(
+//    val id: String,
+//    val contextAdded: Array<String>,
+//    val dependsOn: Array<String>,
+//    val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
+//    val refinementContextId: String,
+//)
+
 @Suppress("unused")
 @JunctionMarker(JunctionKind.Internal)
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
-annotation class FanoutJunctionSpec(
+annotation class TransformJunctionSpec(
     val id: String,
+    val contextAdded: Array<String>,
     val dependsOn: Array<String>,
     val dependsOnKind: DependsOnKind = DependsOnKind.Junction,
-    val requiredContextId: String,
+    val refinementContextId: String,
 )
 
 enum class DependencyInjectionLibrary {
@@ -320,12 +335,24 @@ object DefaultJunctionRunner : JunctionRunner {
     ): JunctionLog<T> {
         val startTime = System.currentTimeMillis()
 
+        fun terminalSnapshots(log: JunctionLog<T>): List<JsonObject> {
+            val children = log.childLogs.orEmpty()
+            return if (children.isEmpty()) {
+                listOfNotNull(log.contextSnapshot)
+            } else {
+                children.flatMap(::terminalSnapshots)
+            }
+        }
+
         val executionPlan = junctionGraph.executionPlans[junctionId]
             ?: throw InvalidJunctionException("Execution plan for junction '$junctionId' not found")
 
-        val allLayerLogs = mutableListOf<JunctionLog<T>>()
+        fun executeLayersFrom(layerIndex: Int, currentContext: T): List<JunctionLog<T>> {
+            if (layerIndex >= executionPlan.junctionExecutionLayerList.size) {
+                return emptyList()
+            }
 
-        executionPlan.junctionExecutionLayerList.forEach { executionLayer ->
+            val executionLayer = executionPlan.junctionExecutionLayerList[layerIndex]
             val layerLogs = executionLayer
                 .toList()
                 .parallelStream()
@@ -334,14 +361,48 @@ object DefaultJunctionRunner : JunctionRunner {
                         currentJunctionId = currentJunctionId,
                         junctionGraph = junctionGraph,
                         inputJunctionData = inputJunctionData,
-                        context = context,
+                        context = currentContext,
                         startTime = System.currentTimeMillis(),
                     )
                 }
                 .toList()
 
-            allLayerLogs += layerLogs
+            val fanoutIndexes = layerLogs.indices.filter { layerLogs[it].splitContextList != null }
+
+            if (fanoutIndexes.size > 1) {
+                throw InvalidJunctionException(
+                    "Execution layer $layerIndex for junction '$junctionId' contains multiple fanout results"
+                )
+            }
+
+            val fanoutIndex = fanoutIndexes.singleOrNull()
+                ?: return layerLogs + executeLayersFrom(layerIndex + 1, currentContext)
+
+            val fanoutLog = layerLogs[fanoutIndex]
+            val branchLogs = fanoutLog.splitContextList.orEmpty()
+                .parallelStream()
+                .map { childContext ->
+                    val childLogs = executeLayersFrom(layerIndex + 1, childContext)
+                    JunctionLog(
+                        status = JunctionLogStatus.Info,
+                        startTime = System.currentTimeMillis(),
+                        endTime = System.currentTimeMillis(),
+                        childLogs = childLogs,
+                        contextSnapshot = if (childLogs.isEmpty()) {
+                            childContext.asSnapshot()
+                        } else {
+                            childLogs.flatMap(::terminalSnapshots).singleOrNull()
+                        },
+                    )
+                }
+                .toList()
+
+            return layerLogs.mapIndexed { index, log ->
+                if (index == fanoutIndex) log.copy(childLogs = branchLogs) else log
+            }
         }
+
+        val allLayerLogs = executeLayersFrom(0, context)
 
         return allLayerLogs.lastOrNull()
             ?.let {
@@ -349,9 +410,8 @@ object DefaultJunctionRunner : JunctionRunner {
                     status = JunctionLogStatus.Info,
                     startTime = startTime,
                     endTime = System.currentTimeMillis(),
-                    contextSnapshot = context.asSnapshot(),
+                    contextSnapshot = terminalSnapshots(it).singleOrNull(),
                     childLogs = allLayerLogs,
-                    splitContextList = it.splitContextList,
                 )
             }
             ?: JunctionLog(
