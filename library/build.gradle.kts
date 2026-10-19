@@ -1,8 +1,9 @@
 group = "com.github.grahnj"
-version = "0.2.0"
+version = "0.3.0"
 
 plugins {
     kotlin("jvm")
+    id("maven-publish")
     // Apply the shared build logic from a convention plugin.
     // The shared code is located in `buildSrc/src/main/kotlin/kotlin-jvm.gradle.kts`.
     id("buildsrc.convention.kotlin-jvm")
@@ -14,4 +15,13 @@ dependencies {
     // Apply the kotlinx bundle of dependencies from the version catalog (`gradle/libs.versions.toml`).
     implementation(libs.bundles.kotlinxEcosystem)
     testImplementation(kotlin("test"))
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("junction") {
+            from(components["java"])
+            artifactId = "junction"
+        }
+    }
 }

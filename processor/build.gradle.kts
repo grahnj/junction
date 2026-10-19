@@ -1,9 +1,10 @@
 plugins {
     kotlin("jvm")
+    id("maven-publish")
 }
 
 group = "com.github.grahnj"
-version = "0.2.0"
+version = "0.3.0"
 
 repositories {
     mavenCentral()
@@ -23,4 +24,13 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("junction") {
+            from(components["java"])
+            artifactId = "junction"
+        }
+    }
 }
